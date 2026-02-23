@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta charset="utf-8" />
+    <title>Leaflet Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        #map { height: 100vh; width: 100%; margin: 0; padding: 0; }
+        body { margin: 0; }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map').setView([35.6812, 139.7671], 13);
+        // スケールバー（距離計）を追加
+        L.control.scale({
+            imperial: false,  // マイル表示を無効（メートル・キロメートルのみにする）
+            metric: true,      // メートル表示を有効
+            position: 'bottomleft' // 表示位置（'topleft', 'topright', 'bottomleft', 'bottomright'）
+        }).addTo(map);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        var markers = {};      // 確定済みマーカー
+        var tempMarkers = [];  // 一時マーカー
+        var selectedIds = [];
+        var multiDeleteMode = false;
+        var multiAddMode = false;
+
+        var blueIcon = new L.Icon.Default();
+        var redIcon = new L.Icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+            iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+        });
+
+        map.on('click', function (e) {
+            var lat = e.latlng.lat.toFixed(6);
+            var lng = e.latlng.lng.toFixed(6);
+
+            if (!multiAddMode) {
+                // --- 単一追加モードの場合 ---
+                removeTempMarkers();
+            }
+
+            // マーカー生成
+            var m = L.marker([lat, lng]).addTo(map);
+            
+            // 複数追加モードならクリックで削除可能にする
+            if (multiAddMode) {
+                m.on('click', function() {
+                    map.removeLayer(this);
+                    var self = this;
+                    tempMarkers = tempMarkers.filter(function(item) {
+                        return item !== self;
+                    });
+                });
+            }
+
+            tempMarkers.push(m);
+        });
+
+        // 固定マーカー追加（VBAから呼ばれる）
+        function addFixedMarker(id, lat, lng) {
+            var marker = L.marker([lat, lng]).addTo(map);
+            marker.bindTooltip(String(id), {
+                permanent: true,
+                direction: 'top',
+                offset: [0, -10]
+            });
+            marker.myId = id;
+
+            attachMarkerEvents(marker, id, lat, lng);
+            markers[id] = marker;
+        }
+
+        // 再帰的にイベント付与
+        function attachMarkerEvents(marker, id, lat, lng) {
+            marker.on('click', function () {
+                // 複数追加モード中はスキップ
+                if (multiAddMode) return;
+
+                // 自分自身を一旦削除
+                map.removeLayer(this);
+
+                // まったく同じ場所に新しいマーカーとして追加（これで最前面に来る）
+                var newMarker = L.marker([lat, lng]).addTo(map);
+                newMarker.bindTooltip(String(id), { 
+                    permanent: true, 
+                    direction: 'top',
+                    offset: [0, -10] // 位置を安定させるためのオフセット
+                });
+                newMarker.myId = id;
+
+                // 管理用オブジェクト(markers)を更新
+                markers[id] = newMarker;
+
+                // 他のマーカー（以前クリックしたもの）のレイヤを下げる
+                for (var key in markers) {
+                    if (markers.hasOwnProperty(key) && key != id) {
+                        markers[key].setZIndexOffset(0);
+                    }
+                }
+
+                // 新しいマーカーに再度クリックイベントを付与（再帰的）
+                attachMarkerEvents(newMarker, id, lat, lng);
+                
+                // 確定済みマーカーをクリックしたときのハンドリング
+                handleMarkerClick(newMarker);
+            });
+        }
+
+        // 一時マーカーの全消去（キャンセル・確定・モード切替時に使用）
+        function removeTempMarkers() {
+            for (var i = 0; i < tempMarkers.length; i++) {
+                map.removeLayer(tempMarkers[i]);
+            }
+            tempMarkers = [];
+        }
+
+        // 一時マーカーの座標をVBAに渡す
+        function getTempLatLng() {
+            if (tempMarkers.length === 0) return "";
+            var res = [];
+            for (var i = 0; i < tempMarkers.length; i++) {
+                var p = tempMarkers[i].getLatLng();
+                res.push(p.lat.toFixed(6) + ":" + p.lng.toFixed(6));
+            }
+            return res.join(",");
+        }
+
+        // 確定済みマーカーをクリックしたとき
+        function handleMarkerClick(marker) {
+            var id = marker.myId;
+            var idx = selectedIds.indexOf(id);
+            if (multiDeleteMode) {
+                // 複数削除モード
+                if (idx > -1) {
+                    selectedIds.splice(idx, 1);
+                    updateMarkerStyle(id, false);
+                } else {
+                    selectedIds.push(id);
+                    updateMarkerStyle(id, true);
+                }
+            } else {
+                clearAllSelection();
+                selectedIds.push(id);
+                updateMarkerStyle(id, true);
+            }
+        }
+
+        // 確定済みマーカーのスタイル変更（青<->赤）
+        function updateMarkerStyle(id, isSelected) {
+            var marker = markers[id];
+            if (marker) {
+                marker.setIcon(isSelected ? redIcon : blueIcon);
+            }
+        }
+
+        // マップのすべての選択マーカーを解除
+        function clearAllSelection() {
+            for (var i = 0; i < selectedIds.length; i++) {
+                updateMarkerStyle(selectedIds[i], false);
+            }
+            selectedIds = [];
+        }
+
+        // マップから確定済みマーカーを削除
+        function removeMarker(id) {
+            if (markers[id]) {
+                map.removeLayer(markers[id]);
+                delete markers[id];
+            }
+        }
+
+        // マップから確定済みマーカーを削除
+        function removeAllMarkers() {
+            for (var id in markers) {
+                removeMarker(id)
+            }
+            markers = {};
+        }
+
+        // すべてのマーカーを地図から物理的に削除し、データを空にする
+        function clearAllMarkers() {
+            // 確定済みマーカー
+            removeAllMarkers();
+            // 一時マーカー
+            removeTempMarkers();
+            // 選択状態のIDリスト
+            selectedIds = [];
+        }
+
+        // 確定済みマーカーの存在確認
+        function hasMarkers() {
+            var markersCnt = Object.keys(markers).length;
+            return markersCnt > 0;
+        }
+
+        function getSelectedIds() { 
+            return selectedIds.join(",");
+        }
+
+        // 複数追加モードの切り替え
+        function setMultiAddMode(bool) {
+            multiAddMode = bool;
+            if (!bool) removeTempMarkers(); // モード終了時に掃除
+        }
+
+        // 複数削除モードの切り替え
+        function setMultiDeleteMode(bool) {
+            multiDeleteMode = bool;
+            if (!bool) clearAllSelection(); // モード終了時に掃除
+        }
+    </script>
+</body>
+</html>
