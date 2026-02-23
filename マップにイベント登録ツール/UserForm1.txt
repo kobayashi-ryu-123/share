@@ -1,0 +1,45 @@
+' UserForm1の全コードをこれに書き換え
+Option Explicit
+
+Private Sub UserForm_Initialize()
+    Dim targetPath As String
+    Dim fso As Object
+    Dim htmlContent As String
+    
+    targetPath = ThisWorkbook.Path & "\map.html"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    If Not fso.FileExists(targetPath) Then
+        MsgBox "map.htmlが見つかりません。"
+        Exit Sub
+    End If
+
+    ' HTMLの中身を文字列として読み込む
+    htmlContent = fso.OpenTextFile(targetPath, 1).ReadAll
+    
+    ' ブラウザを初期化して中身を書き込む
+    Me.WebBrowser1.Navigate "about:blank"
+    Do While Me.WebBrowser1.ReadyState <> 4: DoEvents: Loop ' 読み込み待ち
+    
+    Me.WebBrowser1.Document.Write htmlContent
+    Me.WebBrowser1.Document.Close
+    
+    ' 表示位置の自動決定をオフにする
+    Me.StartUpPosition = 0
+    
+    ' Excelウィンドウの「グリッド（セル）エリア」の左上に合わせる
+    ' Application.Top/Left はウィンドウ枠、PointsToScreenPixels は座標変換に利用
+    Me.Top = Application.Top + (Application.UsableHeight - ActiveWindow.UsableHeight) + 160
+    Me.Left = Application.Left + (Application.UsableWidth - ActiveWindow.UsableWidth) + 5
+End Sub
+
+Public Function CallJS(ByVal script As String) As Variant
+    On Error Resume Next
+    ' eval を使うことで、命令の実行と戻り値の取得を両立させます
+    CallJS = Me.WebBrowser1.Document.parentWindow.eval(script)
+End Function
+
+Private Sub UserForm_Terminate()
+    ' フォームが閉じられたら、すべてのボタンをグレーにする
+    SetButtonState "AllDisabled"
+End Sub

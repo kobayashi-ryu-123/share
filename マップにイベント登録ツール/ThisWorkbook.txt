@@ -1,0 +1,11 @@
+' --- ThisWorkbook ---
+Private Sub Workbook_Open()
+    ' イベントシートをアクティブに
+    Sheets("Events").Activate
+    
+    ' 初期状態 (活性：追加,削除,複数登録,複数削除 / 非活性：キャンセル,確定)
+    Module1.SetButtonState "Initial"
+    
+    ' マップを自動起動
+    Application.OnTime Now + TimeValue("00:00:01"), "OpenMap"
+End Sub

@@ -1,0 +1,399 @@
+Option Explicit
+
+' --- 背景色設定 ---
+Const COLOR_ACTIVE As Long = 12615680     ' RGB(0, 112, 192) - 青色
+Const COLOR_INACTIVE As Long = 14474460   ' RGB(220, 220, 220) - 灰色
+
+' --- 文字色設定 ---
+Const FONT_COLOR_WHITE As Long = 16777215  ' RGB(255, 255, 255) - 白色
+Const FONT_COLOR_GRAY As Long = 10526880   ' RGB(160, 160, 160) - 薄い灰
+
+' --- シート設定 ---
+Const SHEET_NAME As String = "Events"  ' シート名をここで一括管理
+
+' --- カラム設定 ---
+Const START_COL As Integer = 19 ' S列
+Const COL_COUNT As Integer = 5  ' No, イベント名, 緯度, 経度, 日時
+
+' Windows APIの宣言
+#If VBA7 Then
+    ' 64bit/32bit共通（現代のExcelはこちらを通ります）
+    Private Declare PtrSafe Sub GetSystemTime Lib "kernel32" (lpSystemTime As SYSTEMTIME)
+#Else
+    ' 旧世代のExcel用
+    Private Declare Sub GetSystemTime Lib "kernel32" (lpSystemTime As SYSTEMTIME)
+#End If
+
+' システム時刻構造体（End Typeまでセットで貼り付けてください）
+Private Type SYSTEMTIME
+    wYear As Integer
+    wMonth As Integer
+    wDayOfWeek As Integer
+    wDay As Integer
+    wHour As Integer
+    wMinute As Integer
+    wSecond As Integer
+    wMilliseconds As Integer
+End Type
+
+' --- 地図を表示する起動マクロ ---
+Sub OpenMap()
+    ' シートを触れるようにモードレスで表示
+    UserForm1.Show vbModeless
+    ' マップが開いたら、追加・削除・複数削除を活性化する
+    SetButtonState "Initial"
+    
+    ' --- 待機処理を強化 ---
+    Do While UserForm1.WebBrowser1.ReadyState <> 4: DoEvents: Loop
+    Application.Wait [Now() + "00:00:02"] ' 念のため1秒待機
+    
+    Refresh
+End Sub
+
+' --- 追加ボタン ---
+Sub OnClick_Add()
+    ' 1. ボタンの活性状態チェック
+    ' OnActionで制御している場合は不要ですが、念のため色での判定も残します
+    If ActiveSheet.Shapes("btn_Add").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    
+    Dim latlngStr As String
+    ' JavaScript側から一時マーカー(単一)の座標を取得
+    latlngStr = UserForm1.CallJS("getTempLatLng()")
+    
+    ' 2. 一時マーカーがない場合はメッセージを出して終了
+    If latlngStr = "" Then
+        MsgBox "マップをクリックして一時マーカー（青）を配置してください。"
+        Exit Sub
+    End If
+    
+    ' 4. 書き込みと固定化の実行
+    ProcessAddData latlngStr
+End Sub
+
+
+' --- 削除ボタン ---
+Sub OnClick_Delete()
+    ' ボタンが非活性なら終了
+    If ActiveSheet.Shapes("btn_Delete").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    
+    Dim selectedIds As String
+    selectedIds = UserForm1.CallJS("getSelectedIds()")
+    
+    If selectedIds = "" Then
+        ' 選択なし：ダイアログを表示
+        Dim inputIds As String
+        inputIds = InputBox("削除するマーカー番号を入力してください（カンマ区切り可）", "マーカー削除")
+        If inputIds <> "" Then DeleteMarkers inputIds
+    Else
+        ' 選択あり：対象を削除
+        DeleteMarkers selectedIds
+    End If
+End Sub
+
+' --- 複数追加ボタン ---
+Sub OnClick_MultiAdd()
+    If ActiveSheet.Shapes("btn_MultiAdd").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    ' 複数追加モードに切り替え
+    UserForm1.CallJS ("setMultiAddMode(true)")
+    SetButtonState "MultiAdd"
+End Sub
+
+' --- 複数削除ボタンクリック ---
+Sub OnClick_MultiDelete()
+    If ActiveSheet.Shapes("btn_MultiDelete").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    ' モード切替の前に一時マーカーをクリア
+    UserForm1.CallJS ("removeTempMarkers()")
+    ' 複数削除モードに切り替え
+    UserForm1.CallJS ("setMultiDeleteMode(true)")
+    SetButtonState "MultiDelete"
+End Sub
+
+' --- [キャンセル] ボタン ---
+Sub OnClick_Cancel()
+    If ActiveSheet.Shapes("btn_Cancel").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    UserForm1.CallJS ("removeTempMarkers()")         ' 仮マーカー消去
+    UserForm1.CallJS ("setMultiDeleteMode(false)")  ' 複数削除モード解除
+    UserForm1.CallJS ("setMultiAddMode(false)")     ' 複数追加モード解除
+    SetButtonState "Initial"
+End Sub
+
+' --- [確定] ボタン ---
+Sub OnClick_Confirm()
+    If ActiveSheet.Shapes("btn_Confirm").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    
+    Dim dataStr As String
+    
+    ' 1. まず複数追加用のデータを取得（"lat:lng,lat:lng..."形式）
+    dataStr = UserForm1.CallJS("getTempLatLng()")
+    
+    ' 2. 複数追加が空なら、単発追加用のデータを取得（"lat:lng"形式）
+    If dataStr = "" Then
+        dataStr = UserForm1.CallJS("getTempLatLng()")
+        ' 単発データがあれば、区切り文字を合わせる
+        If dataStr <> "" Then dataStr = Replace(dataStr, ",", ":")
+    End If
+    
+    ' --- 判定と実行 ---
+    If dataStr <> "" Then
+        ' 共通の書き込み処理へ
+        ProcessAddData dataStr
+    Else
+        ' 追加データがない場合は、複数削除の実行を確認
+        Dim deleteIds As String
+        deleteIds = UserForm1.CallJS("getSelectedIds()")
+        If deleteIds <> "" Then DeleteMarkers deleteIds
+    End If
+    
+    ' 全モード解除して初期状態に戻す
+    UserForm1.CallJS ("setMultiDeleteMode(false)")
+    UserForm1.CallJS ("setMultiAddMode(false)")
+    SetButtonState "Initial"
+End Sub
+
+' --- 再読み込みボタン ---
+Sub OnClick_Refresh()
+    ' ボタンが活性状態の時だけ実行
+    If ActiveSheet.Shapes("btn_Refresh").Fill.ForeColor.RGB = COLOR_INACTIVE Then Exit Sub
+    Refresh
+    MsgBox "再読み込みが完了しました。", vbInformation
+End Sub
+
+' --- 全削除 ボタン ---
+Sub OnClick_AllClear()
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    Dim hasSheetData As Boolean
+    Dim hasMapData As Boolean
+    Dim lastRow As Long
+    
+    ' 1. シートにデータがあるか確認（2行目以降に値があるか）
+    lastRow = ws.Cells(ws.Rows.Count, START_COL).End(xlUp).Row
+    hasSheetData = (lastRow >= 2)
+    
+    ' 2. 地図上にデータがあるか確認
+    hasMapData = UserForm1.CallJS("hasMarkers()")
+    
+    ' 3. どちらにもデータがなければ終了
+    If Not hasSheetData And Not hasMapData Then
+        MsgBox "削除するデータはありません。", vbInformation
+        Exit Sub
+    End If
+
+    ' 4. 存在確認が取れたので、削除確認メッセージを表示
+    If MsgBox("すべて削除しますか？", vbQuestion + vbYesNo) = vbYes Then
+
+        ' マップ上のマーカーをすべて削除
+        UserForm1.CallJS ("clearAllMarkers()")
+        
+        ' シートのデータ行を削除
+        ws.Rows("2:" & lastRow).ClearContents
+        
+        MsgBox "すべてのデータをクリアしました。", vbInformation
+    End If
+    
+End Sub
+
+' --- ボタンの活性・非活性を制御する共通処理 ---
+Sub SetButtonState(mode As String)
+    Dim btnNames As Variant, b As Variant, shouldEnable As Boolean
+    Dim targetShape As Shape
+    Dim macroName As String
+    
+    ' 全6ボタンを対象
+    btnNames = Array("btn_Add", "btn_Delete", "btn_MultiAdd", "btn_MultiDelete", "btn_Cancel", "btn_Confirm", "btn_Refresh", "btn_AllClear")
+    
+    For Each b In btnNames
+        ' --- 1. モード判定 ---
+        Select Case mode
+            Case "Initial"
+                ' ① 初期状態：追加, 削除, 複数登録, 複数削除, 再読み込み, 全削除が活性
+                shouldEnable = (b = "btn_Add" Or b = "btn_Delete" Or b = "btn_MultiAdd" Or b = "btn_MultiDelete" Or b = "btn_Refresh" Or b = "btn_AllClear")
+            Case "MultiAdd", "MultiDelete"
+                ' ②③ 各モード状態：キャンセル, 確定のみ活性
+                shouldEnable = (b = "btn_Cancel" Or b = "btn_Confirm")
+            Case Else
+                ' AllDisabled：すべて非活性
+                shouldEnable = False
+        End Select
+        
+        ' --- 2. 図形の制御 ---
+        Set targetShape = Nothing
+        On Error Resume Next
+        Set targetShape = ActiveSheet.Shapes(b)
+        On Error GoTo 0
+        
+        If Not targetShape Is Nothing Then
+            With targetShape
+                If shouldEnable Then
+                    ' 【活性状態】青色、不透明、マクロ登録あり
+                    .Fill.ForeColor.RGB = COLOR_ACTIVE
+                    .Fill.Transparency = 0
+                    .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = FONT_COLOR_WHITE ' 文字：白
+                    
+                    ' ボタン名に対応するマクロを再登録
+                    macroName = "OnClick_" & Replace(b, "btn_", "")
+                    .OnAction = macroName
+                Else
+                    ' 【非活性状態】灰色、半透明、マクロ登録解除
+                    .Fill.ForeColor.RGB = COLOR_INACTIVE
+                    .Fill.Transparency = 0.3
+                    .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = FONT_COLOR_GRAY ' 文字：薄い灰
+                    
+                    ' マクロ登録を空にすることでクリックを無効化
+                    .OnAction = ""
+                End If
+            End With
+        End If
+    Next b
+End Sub
+
+' --- 共通削除処理 ---
+Sub DeleteMarkers(ByVal idString As String)
+    Dim ids() As String, id As Variant
+    ids = Split(idString, ",")
+    
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    Dim i As Long
+    
+    ' 1. 地図上のマーカーを削除
+    For Each id In ids
+        If Trim(id) <> "" Then
+            UserForm1.CallJS ("removeMarker(" & Trim(id) & ")")
+            
+            ' 下から上に検索して行を削除
+            For i = ws.Cells(ws.Rows.Count, START_COL).End(xlUp).Row To 2 Step -1
+                If ws.Cells(i, START_COL).Value = Val(id) Then
+                    ws.Cells(i, START_COL).Resize(1, COL_COUNT).Delete Shift:=xlUp
+                End If
+            Next i
+        End If
+    Next id
+
+    ' --- IDの振り直し処理 ---
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, START_COL + 2).End(xlUp).Row ' 緯度など確実に入力されている列で最終行を確認
+    
+    If lastRow >= 2 Then
+        For i = 2 To lastRow
+            ws.Cells(i, START_COL).Value = i - 1 ' 2行目ならID=1, 3行目ならID=2...
+        Next i
+    End If
+
+    ' --- 重要：地図側の番号（ツールチップ）もズレるため再読み込み ---
+    Refresh
+End Sub
+
+' --- 共通書き込み処理 ---
+Sub ProcessAddData(ByVal dataStr As String, Optional ByVal isInitialLoad As Boolean = False)
+    Dim points() As String, p As Variant, coords() As String
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    Dim lastRow As Long, newNo As Long, lat As Double, lng As Double
+    
+    points = Split(dataStr, ",")
+    For Each p In points
+        coords = Split(p, ":")
+        
+        ' 座標データが不足している場合はスキップ
+        If UBound(coords) < 1 Then GoTo SkipPoint
+        
+        lat = Val(coords(0)): lng = Val(coords(1))
+        
+        If isInitialLoad Then
+            ' --- 起動時の読み込みモード ---
+            ' 起動時は coords(2) に保存されている No を使用
+            newNo = Val(coords(2))
+        Else
+            ' --- 通常の追加モード ---
+            lastRow = ws.Cells(ws.Rows.Count, START_COL).End(xlUp).Row
+            If lastRow = 1 Or Not IsNumeric(ws.Cells(lastRow, START_COL).Value) Then
+                newNo = 1
+            Else
+                newNo = ws.Cells(lastRow, START_COL).Value + 1
+            End If
+            
+            ' Excelへの書き込み
+            ws.Cells(lastRow + 1, START_COL).Value = newNo
+            ws.Cells(lastRow + 1, START_COL + 1).Value = ""
+            ws.Cells(lastRow + 1, START_COL + 2).Value = lat
+            ws.Cells(lastRow + 1, START_COL + 3).Value = lng
+            ws.Cells(lastRow + 1, START_COL + 4).Value = "'" & GetNowWithMs()
+            
+            ' 書式設定
+            ws.Cells(lastRow + 1, START_COL).NumberFormatLocal = "0"
+            ws.Cells(lastRow + 1, START_COL + 1).NumberFormatLocal = "@"
+            ws.Cells(lastRow + 1, START_COL + 2).NumberFormatLocal = "0.000000"
+            ws.Cells(lastRow + 1, START_COL + 3).NumberFormatLocal = "0.000000"
+            ws.Cells(lastRow + 1, START_COL + 4).NumberFormatLocal = "@"
+            
+        End If
+        
+        ' マップの固定化（JavaScript呼び出し）
+        UserForm1.CallJS ("addFixedMarker(" & newNo & "," & lat & "," & lng & ")")
+
+SkipPoint:
+    Next p
+    
+    ' 新規追加時のみ一時マーカーを掃除
+    If Not isInitialLoad Then UserForm1.CallJS ("removeTempMarkers()")
+End Sub
+
+' 再読み込み処理
+Sub Refresh()
+    ' マップ上のマーカーをすべて削除する
+    UserForm1.CallJS ("clearAllMarkers()")
+    
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets(SHEET_NAME)
+    Dim i As Long, lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, START_COL).End(xlUp).Row
+    
+    ' すでにあるEventsデータをマップに追加する
+    If lastRow >= 2 Then
+        For i = 2 To lastRow
+            Dim data As String
+            data = ws.Cells(i, START_COL + 2).Value & ":" & _
+                   ws.Cells(i, START_COL + 3).Value & ":" & _
+                   ws.Cells(i, START_COL).Value
+            
+            ' 第二引数を True にして呼び出し
+            ProcessAddData data, True
+        Next i
+    End If
+End Sub
+
+
+' UTC時刻をミリ秒付き文字列で取得する関数
+Private Function GetNowWithMs() As String
+    Dim st As SYSTEMTIME
+    ' APIを呼び出してシステム時刻(UTC)を取得
+    GetSystemTime st
+    
+    ' フォーマットを組み立て (YYYY/MM/DD HH:MM:SS.mmm)
+    GetNowWithMs = Format(st.wYear, "0000") & "/" & _
+                   Format(st.wMonth, "00") & "/" & _
+                   Format(st.wDay, "00") & " " & _
+                   Format(st.wHour, "00") & ":" & _
+                   Format(st.wMinute, "00") & ":" & _
+                   Format(st.wSecond, "00") & "." & _
+                   Format(st.wMilliseconds, "000") & "Z"
+End Function
+
+' WebBrowserを最新モードにする
+Sub SetRegistryForIE11()
+    Dim regKey As String
+    Dim appName As String
+    Dim shell As Object
+    
+    appName = "Excel.exe"
+    regKey = "HKEY_CURRENT_USER\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION\"
+    
+    Set shell = CreateObject("WScript.Shell")
+    ' 11001 (0x2ED9) = IE11 Edge Mode
+    On Error Resume Next
+    shell.RegWrite regKey & appName, 11001, "REG_DWORD"
+    
+    If Err.Number = 0 Then
+        MsgBox "設定が完了しました。Excelを一度閉じて、開き直してください。", vbInformation
+    Else
+        MsgBox "レジストリの書き込みに失敗しました。管理者権限を確認してください。", vbCritical
+    End If
+End Sub
+
