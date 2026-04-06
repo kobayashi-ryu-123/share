@@ -1,0 +1,52 @@
+■全体構成
+| 種別  | テーブル名                | 役割       |
+| --- | -------------------- | -------- |
+| マスタ | summary_item_master  | サマリ項目定義  |
+| マスタ | filter_item_master   | フィルタ項目定義 |
+| データ | user_summary_setting | サマリ設定    |
+| データ | user_filter_setting  | フィルタ設定   |
+| データ | user_display_setting | UI設定     |
+
+
+■summary_item_master（サマリ項目マスタ）
+| カラム名       | 型            | PK | NOT NULL | 説明                  |
+| ---------- | ------------ | -- | -------- | ------------------- |
+| item_id    | BIGINT       | ○  | ○        | 項目ID                |
+| category   | VARCHAR(50)  |    | ○        | カテゴリ（time / gender） |
+| item_key   | VARCHAR(50)  |    | ○        | 項目キー                |
+| item_label | VARCHAR(100) |    | ○        | 表示名                 |
+| sort_order | INT          |    | ○        | デフォルト表示順            |
+
+
+■filter_item_master（フィルタ項目マスタ）
+| カラム名       | 型            | PK | NOT NULL | 説明                  |
+| ---------- | ------------ | -- | -------- | ------------------- |
+| item_id    | BIGINT       | ○  | ○        | 項目ID                |
+| category   | VARCHAR(50)  |    | ○        | カテゴリ（time / gender） |
+| item_key   | VARCHAR(50)  |    | ○        | 項目キー                |
+| item_label | VARCHAR(100) |    | ○        | 表示名                 |
+
+
+■user_summary_setting（サマリ設定）
+| カラム名          | 型           | PK | NOT NULL | 説明                   |
+| ------------- | ----------- | -- | -------- | -------------------- |
+| user_code     | VARCHAR(50) | ○  | ○        | ユーザー識別子（NULLでデフォルト可） |
+| item_id       | BIGINT      | ○  | ○        | 項目ID                 |
+| display_order | INT         |    | ○        | 表示順（ユーザーごと）          |
+| is_visible    | BOOLEAN     |    | ○        | 表示フラグ                |
+
+
+■user_filter_setting（フィルタ設定）
+| カラム名       | 型           | PK | NOT NULL | 説明      |
+| ---------- | ----------- | -- | -------- | ------- |
+| user_code  | VARCHAR(50) | ○  | ○        | ユーザー識別子 |
+| item_id    | BIGINT      | ○  | ○        | 項目ID    |
+| is_enabled | BOOLEAN     |    | ○        | 有効フラグ   |
+
+
+■user_display_setting（UI設定）
+| カラム名        | 型           | PK | NOT NULL | 説明                   |
+| ----------- | ----------- | -- | -------- | -------------------- |
+| user_code   | VARCHAR(50) | ○  | ○        | ユーザー識別子              |
+| setting_key | VARCHAR(50) | ○  | ○        | 設定キー（marker_popupなど） |
+| value_bool  | BOOLEAN     |    | ○        | 設定値                  |
