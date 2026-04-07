@@ -1,0 +1,114 @@
+＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+バックエンド（API）側
+＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+→「状態の保存」と「業務ロジック」だけ
+
+// 設定
+class Settings {
+  List<SummarySetting> summary;
+  List<FilterSetting> filters;
+}
+// サマリ
+class SummarySetting {
+  String category; // age, time, target
+  boolean display;
+  int order;
+}
+// マーカーフィルタ
+class FilterSetting {
+  String category;
+  List<FilterItem> items;
+}
+// マーカーフィルタ（カテゴリごとの項目）
+class FilterItem {
+  String key; // 10s, morning など
+  boolean checked;
+}
+
+＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+フロントエンド側
+＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+→設定データ（DB）、ラベル定義、画面表示用ViewModel
+
+■設定型定義
+// settings.model.ts
+// カテゴリ定義
+export type Category = 'age' | 'time' | 'target'
+// サマリ設定
+export type SummarySetting = {
+  category: Category
+  display: boolean
+  order: number
+}
+// マーカーフィルタ設定（項目）
+export type FilterItem = {
+  key: string
+  checked: boolean
+}
+// マーカーフィルタ設定
+export type FilterSetting = {
+  category: Category
+  items: FilterItem[]
+}
+// 設定
+export type Settings = {
+  summary: SummarySetting[]
+  filters: FilterSetting[]
+}
+
+■ラベル定義
+import { Category } from '../models/settings.model'
+export const CATEGORY_LABELS: Record<Category, string> = {
+  age: '年齢',
+  time: '時間帯',
+  target: '対象'
+}
+export const ITEM_LABELS: Record<Category, Record<string, string>> = {
+  age: {
+    '10s': '10代',
+    '20s': '20代',
+    '30s': '30代',
+    'other': 'その他'
+  },
+  time: {
+    morning: '朝',
+    evening: '夕方',
+    night: '夜'
+  },
+  target: {
+    car: '車',
+    bike: '2輪',
+    person: '人'
+  }
+}
+
+■ViewModel変換
+const summaryView = settings.summary.map(s => ({
+  ...s,
+  label: CATEGORY_LABELS[s.category]
+}))
+
+const filterView = settings.filters.map(f => ({
+  category: f.category,
+  label: CATEGORY_LABELS[f.category],
+  items: f.items.map(i => ({
+    ...i,
+    label: ITEM_LABELS[f.category][i.key]
+  }))
+}))
+
+■絞り込みロジック
+function filterAccidents(accidents, settings) {
+  const filterMap = {}
+
+  settings.filters.forEach(f => {
+    const checked = f.items.filter(i => i.checked).map(i => i.key)
+    if (checked.length) filterMap[f.category] = checked
+  })
+
+  return accidents.filter(acc =>
+    Object.entries(filterMap).every(([cat, vals]) =>
+      vals.includes(acc[cat])
+    )
+  )
+}
